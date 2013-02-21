@@ -1,4 +1,0 @@
-csfd
-====
-
-CSFD movie finder.
