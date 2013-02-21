@@ -5,6 +5,9 @@ use warnings;
 use Encode;
 use Data::Dumper;
 
+use Linux::Inotify2;
+use AnyEvent;
+
 use CSFDAApi qw/get_search/;
 
 sub timeout_wrap {
@@ -47,20 +50,20 @@ sub timeout_wrap {
 sub better_name {
 	my ($d) = @_;
 
+	chomp $d;
 	# get rid of mess from directory name
 	#$d =~ s/\s-\s/ /ig;
-	$d =~ s/1080p//ig;
-	$d =~ s/\(720p\)//ig;
-	$d =~ s/720p//ig;
+	$d =~ s/\(?1080p\)?//ig;
+	$d =~ s/\(?720p\)?//ig;
 	$d =~ s/BRrip//ig;
 	$d =~ s/x264//ig;
 	$d =~ s/[^a-zA-Z]CZ//ig;
 	$d =~ s/[^a-zA-Z]EN//ig;
 	$d =~ s/subtCZ//g;
 	$d =~ s/sub//ig;
-	$d =~ s/5.1//g;
+	$d =~ s/5\.1//g;
 	$d =~ s/\s+/ /g;
-	$d =~ s/\s$//g;
+	$d =~ s/\s+$//g;
 
 	(my $year = $d) =~ s/.*\((\d{4})\)$/$1/;
 	$d = Encode::encode ("utf8", $d);
@@ -83,8 +86,6 @@ sub cruise_dir {
 		next if ( defined $movie{$d} );
 		$movie{$d} = 1;
 
-		my @result = ();
-		
 		# closure for timeout wrapper
 		my $get_search = sub {
 			return get_search ($d);
@@ -101,7 +102,7 @@ sub cruise_dir {
 		next if ( not defined $ret );
 
 		my $movie = $ret->{films}[0];
-		next if ( not defined $movie );
+		next unless defined $movie;
 
 		my $movie_rating = "00";
 		$movie_rating = $movie->{rating_average} if defined $movie->{rating_average};
@@ -121,22 +122,21 @@ sub cruise_dir {
 	}
 }
 
-sub main {
-	print "<!DOCTYPE HTML>\n<html>\n<head><meta charset=\"utf-8\" /></head>\n<body>\n";
-
+sub pool {
 	my $dh = undef;
 
 	my @dirs = qw(/data/public/MKV/ /data/public/DVD/);
 	foreach my $dir (@dirs) {
-		print "<h1>$dir</h1>\n";
+		# skip if $dir is not directory
 		my $opendir = sub {
-			opendir (my $dh, $dir) or die "opendir ($!)\n";
+			opendir (my $dh, $dir) or die "opendir: $!\n";
 			return $dh;
 		};
 
 		#my $dh = 0;
 		eval {
 			$dh = timeout_wrap ($opendir, 2);
+			print "<h1>$dir</h1>\n";
 			cruise_dir ($dh);
 			closedir ($dh);
 			return 1; # for eval
@@ -145,12 +145,20 @@ sub main {
 			return unless $err;
 
 			if ( $err =~ m/^opendir/ ) {
-				print "i can't open $dir directory ($err)\n";
+				chomp $err;
+				print STDERR "i can't open $dir directory ($err)\n";
 			} else {
-				print "$err\n";
+				print STDERR "$err\n";
 			}
 		};
 	}
+}
+
+sub main {
+	print "<!DOCTYPE HTML>\n<html>\n<head><meta charset=\"utf-8\" /></head>\n<body>\n";
+
+	pool ();
+
 	print "</body>\n</html>\n";
 }
 
