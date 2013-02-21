@@ -2,7 +2,7 @@ package CSFDAApi;
 use strict;
 use warnings;
 use base 'Exporter';
-our @EXPORT_OK = qw/get_movie get_search/;
+our @EXPORT_OK = qw/get_search/;
 
 use Digest::HMAC_SHA1 qw/hmac_sha1 hmac_sha1_hex/;
 use LWP::UserAgent;
@@ -21,12 +21,6 @@ sub mac($) {
         my $mac = hmac_sha1_hex ($r, $api_secret);
         $r = "$r&api_signature=$mac";
         return $r;
-}
-
-sub get_movie($) {
-        my $id = shift;
-        my $page = get( mac ("https://android-api.csfd.cz/film/$id") );
-        my $json = decode_json ($page);
 }
 
 sub get_search($) {
