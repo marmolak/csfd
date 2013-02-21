@@ -7,53 +7,6 @@ use Data::Dumper;
 
 use CSFDAApi qw/get_search/;
 
-sub g_search_csfd {
-	my ($search_string, $out) = @_;
-
-	$search_string = uri_escape ($search_string);
-
-	my $cx = '';
-	my $api_key = '';
-
-	my $url = "https://www.googleapis.com/customsearch/v1?" .
-		"key=$api_key&" .
-		"cx=$cx&" .
-		"q=$search_string";
-
-	my $ua = LWP::UserAgent->new ();
-	$ua->default_header ("HTTP_REFERER" => "lala.net");
-
-	$SIG{ALRM} = sub { die "ALARM" };
-	my $body = "";
-	eval {
-		local $@;
-		alarm (2);
-		$body = $ua->get ($url);
-		alarm (0)
-	} or do {
-		return 0 if ( $@ =~ /ALARM/ );
-		die $@;
-	};
-
-	my $json = from_json ($body->decoded_content);
-
-	die "google error: $json->{error}->{message}" if ( defined $json->{error} );
-
-	return 0 if ( not defined $json->{items} );
-
-	my $items = \@{$json->{items}};
-
-
-	my $link = $items->[0]->{link};
-	my $snippet = $items->[0]->{snippet};
-	my $title = $items->[0]->{title};
-
-	@$out = ($title, $link, $snippet);
-
-	return 1;
-}
-
-
 sub timeout_wrap {
 	my ($f, $timeout) = @_;
 
