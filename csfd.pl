@@ -242,7 +242,7 @@ sub impl {
 sub main {
 
 	my $cv = AnyEvent->condvar ();
-	my $w = AnyEvent->timer (after => 0, interval => 10, cb => sub { impl(); });
+	my $w = AnyEvent->timer (after => 0, interval => 10, cb => sub { $poller = undef; impl(); });
 	$cv->recv;
 }
 
