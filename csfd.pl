@@ -7,6 +7,7 @@ use Data::Dumper;
 
 use Linux::Inotify2;
 use AnyEvent;
+use File::Basename;
 
 use CSFDAApi qw/get_search/;
 
@@ -65,10 +66,42 @@ sub better_name {
 	$d =~ s/\s+/ /g;
 	$d =~ s/\s+$//g;
 
-	(my $year = $d) =~ s/.*\((\d{4})\)$/$1/;
 	$d = Encode::encode ("utf8", $d);
 
-	return ($d, $year);
+	return $d;
+}
+
+sub render_movie {
+	my ($movie, $d) = @_;
+
+	return unless defined $movie;
+
+	my $movie_rating = "00";
+	$movie_rating = $movie->{rating_average} if defined $movie->{rating_average};
+	my $movie_name = Encode::encode ("utf8", $movie->{name}) if defined $movie->{name};
+
+	my $movie_genre = "";
+	if (defined $movie->{genre}) {
+		$movie_genre = join (' ', @{$movie->{genre}});
+
+		$movie_genre = Encode::encode ("utf8", $movie_genre);
+	}
+	my $movie_id = $movie->{id} if defined $movie->{id};
+
+	print "<p><strong>$movie_name - $movie_rating\% - ($d)</strong><br>\n";
+	print "$movie_genre<br>\n";
+	print "<a href=\"http://www.csfd.cz/film/$movie_id\">$movie_name</a></p>\n";
+}
+
+sub is_new_movie {
+	my ($ctime) = @_;
+
+	my $now = time ();
+
+	my $day = 3600 * 24;
+	my $week = $day * 7;
+
+	return (($now - $ctime) < $week);
 }
 
 sub cruise_dir {
@@ -77,10 +110,10 @@ sub cruise_dir {
 	my %movie = ();
 
 	while ( readdir ($dh) ) {
-		my $td = $_;
-		next if ( ($td eq '.') or ($td eq '..') );
+		my $d = $_;
+		next if ( ($d eq '.') or ($d eq '..') );
 
-		my ($d, $year) = better_name ($td);
+		$d = better_name ($d);
 	
 		# skip
 		next if ( defined $movie{$d} );
@@ -99,26 +132,10 @@ sub cruise_dir {
 			return unless $err;
 			undef $ret;
 		};
-		next if ( not defined $ret );
-
+		next unless defined $ret;
 		my $movie = $ret->{films}[0];
-		next unless defined $movie;
 
-		my $movie_rating = "00";
-		$movie_rating = $movie->{rating_average} if defined $movie->{rating_average};
-		my $movie_name = Encode::encode ("utf8", $movie->{name});
-
-		my $movie_genre = "";
-		if (defined $movie->{genre}) {
-			$movie_genre = join (' ', @{$movie->{genre}});
-
-			$movie_genre = Encode::encode ("utf8", $movie_genre);
-		}
-		my $movie_id = $movie->{id};
-
-		print "<p><strong>$movie_name - $movie_rating\% - ($d)</strong><br>\n";
-		print "$movie_genre<br>\n";
-		print "<a href=\"http://www.csfd.cz/film/$movie_id\">$movie_name</a></p>\n";
+		render_movie ($movie, $d);
 	}
 }
 
@@ -154,21 +171,88 @@ sub pool {
 	}
 }
 
-sub main {
+
+my $poller = undef;
+sub impl {
 	print "<!DOCTYPE HTML>\n<html>\n<head><meta charset=\"utf-8\" /></head>\n<body>\n";
 
-	pool ();
+	#pool ();
 
+	 my $inotify = Linux::Inotify2->new () or die "Inotify initalization failed!";
+
+	my @dirs = qw(/data/public/MKV/ /data/public/DVD/);
+
+	my $watched = 0;
+	foreach my $dir (@dirs) {
+		my $watcher = $inotify->watch ($dir, IN_CREATE, sub {
+				my ($e) = @_;
+				my $name = $e->fullname;
+
+				return unless ($e->IN_CREATE && -d $name);
+	
+				#csfd
+				my($filename, $directories, $suffix) = fileparse ($name);
+				my $bname = better_name ($filename);
+
+				# closure for timeout wrapper
+				my $get_search = sub {
+					return get_search ($bname);
+				};
+				my $ret = undef;
+				eval {
+					$ret = timeout_wrap ($get_search, 10);
+					return 1; # for eval
+				} or do {
+					my $err = $@;
+					return unless $err;
+					undef $ret;
+				};
+				return unless defined $ret;
+
+				my $movie = $ret->{films}[0];
+				return unless defined $movie;
+				my $movie_name = Encode::encode ("utf8", $movie->{name});
+
+				my $ctime = (stat ($name))[10];
+				
+				my $what = is_new_movie ($ctime) ? ' - novinka!' : ' - nic zajimaveho';
+				print $movie_name . $what . "\n";
+
+			}
+		) or do { print "cant watch $dir: ($!)\n"; next; };
+
+		++$watched;
+	}
+	die "nothing to watch" unless $watched;
+	$poller = undef;
+	$poller = AnyEvent->io (
+		fh   => $inotify->fileno,
+		poll => 'r',
+		cb   => sub { $inotify->poll () }
+	);
+
+	# block
+	print "block?\n";
+	print "block?\n";
+
+	#never reach
 	print "</body>\n</html>\n";
 }
 
+sub main {
+
+	my $cv = AnyEvent->condvar ();
+	my $w = AnyEvent->timer (after => 0, interval => 10, cb => sub { impl(); });
+	$cv->recv;
+}
+
 eval {
-	local $@;
 	my $ret = main ();
 	exit ($ret);
 } or do {
 	my $err = $@;
 	return unless $err;
 
-	die $err;
-}
+	chomp $err;
+	print STDERR "$err\n";
+};
