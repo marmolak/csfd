@@ -150,7 +150,6 @@ sub pool {
 			return $dh;
 		};
 
-		#my $dh = 0;
 		eval {
 			$dh = timeout_wrap ($opendir, 2);
 			print "<h1>$dir</h1>\n";
@@ -173,6 +172,7 @@ sub pool {
 
 
 my $poller = undef;
+my %W;
 sub impl {
 	print "<!DOCTYPE HTML>\n<html>\n<head><meta charset=\"utf-8\" /></head>\n<body>\n";
 
@@ -220,8 +220,8 @@ sub impl {
 
 			}
 		) or do { print "cant watch $dir: ($!)\n"; next; };
-
 		++$watched;
+		$W{$dir} = $watcher;
 	}
 	die "nothing to watch" unless $watched;
 	$poller = undef;
@@ -231,18 +231,24 @@ sub impl {
 		cb   => sub { $inotify->poll () }
 	);
 
-	# block
-	print "block?\n";
-	print "block?\n";
-
-	#never reach
 	print "</body>\n</html>\n";
 }
 
+$|++;
 sub main {
 
 	my $cv = AnyEvent->condvar ();
-	my $w = AnyEvent->timer (after => 0, interval => 10, cb => sub { $poller = undef; impl(); });
+	my $w = AnyEvent->timer (after => 0, interval => 60, cb => sub {
+			# clean up
+			$poller = undef;
+			foreach my $dir (keys %W) {
+				$W{$dir}->cancel ();
+			}
+			undef %W;
+			
+			impl();
+		});
+	
 	$cv->recv;
 }
 
