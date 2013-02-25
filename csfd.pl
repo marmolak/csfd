@@ -11,7 +11,7 @@ use Linux::Inotify2;
 use AnyEvent;
 use File::Basename;
 
-use CSFDAApi qw/get_search/;
+use CSFDAApi;
 
 my $poller = undef;
 my %W;
@@ -76,12 +76,12 @@ sub is_new_movie {
 	return (($now - $ctime) < $week);
 }
 
-sub csfd_get_search {
+sub get_search {
 	my ($d) = @_;
 
 	# closure for timeout wrapper
 	my $get_search = sub {
-		return get_search ($d);
+		return CSFDAApi::get_search ($d);
 	};
 
 	my $ret = undef;
@@ -112,7 +112,7 @@ sub cruise_dir {
 		next if ( defined $movie{$d} );
 		$movie{$d} = 1;
 
-		my $ret = csfd_get_search ($d);
+		my $ret = get_search ($d);
 		next unless defined $ret;
 
 		my $movie = $ret->{films}[0];
@@ -172,7 +172,7 @@ sub main_impl {
 				my($filename, $directories, $suffix) = fileparse ($name);
 				my $bname = better_name ($filename);
 
-				my $ret = csfd_get_search ($bname);
+				my $ret = get_search ($bname);
 				return unless defined $ret;
 
 				my $movie = $ret->{films}[0];
