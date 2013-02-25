@@ -2,6 +2,8 @@
 
 use strict;
 use warnings;
+use utf8;
+
 use Encode;
 use Data::Dumper;
 
@@ -20,12 +22,15 @@ sub better_name {
 
 	chomp $d;
 	# get rid of mess from directory name
-	$d =~ s/\[.*\]//ig;
+	
+	$d =~ s/\[(\d{4})\]/ ($1)/g; # sometimes, year is in [] ... csfd preffer year in ().
+	$d =~ s/\[(:?^\d{4})\]//g; # remove all [Xvid] atd.
+	$d =~ s/\[.*\]//g; # sometimes, year is in []
 	$d =~ s/(?:FULL)?CAM//g;
 	$d =~ s/\(?(?:1080|720)p\)?//ig;
 	$d =~ s/(?:BRrip|DVD(?:rip|scr)|HDTV|XviD|2HD|AAC|AC3)//ig;
 	$d =~ s/(?:x|h)264//ig;
-	$d =~ s/[^a-zA-Z](CZ|EN)//ig;
+	$d =~ s/[^a-zA-Z](?:CZ|EN)//ig;
 	$d =~ s/sub(:?tCZ)?//g;
 	$d =~ s/5\.1//g;
 	$d =~ s/\-.*$//g; # -aXXo etc...
