@@ -53,18 +53,18 @@ sub better_name {
 
 	chomp $d;
 	# get rid of mess from directory name
-	#$d =~ s/\s-\s/ /ig;
-	$d =~ s/\(?1080p\)?//ig;
-	$d =~ s/\(?720p\)?//ig;
-	$d =~ s/BRrip//ig;
-	$d =~ s/x264//ig;
-	$d =~ s/[^a-zA-Z]CZ//ig;
-	$d =~ s/[^a-zA-Z]EN//ig;
-	$d =~ s/subtCZ//g;
-	$d =~ s/sub//ig;
+	$d =~ s/\[.*\]//ig;
+	$d =~ s/(?:FULL)?CAM//g;
+	$d =~ s/\(?(?:1080|720)p\)?//ig;
+	$d =~ s/(?:BRrip|DVD(?:rip|scr)|HDTV|XviD|2HD|AAC|AC3)//ig;
+	$d =~ s/(?:x|h)264//ig;
+	$d =~ s/[^a-zA-Z](CZ|EN)//ig;
+	$d =~ s/sub(:?tCZ)?//g;
 	$d =~ s/5\.1//g;
+	$d =~ s/\-.*$//g;
+
+	$d =~ s/(?:\.|\-)/ /g;
 	$d =~ s/\s+/ /g;
-	$d =~ s/\s+$//g;
 
 	$d = Encode::encode ("utf8", $d);
 
