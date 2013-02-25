@@ -11,42 +11,9 @@ use File::Basename;
 
 use CSFDAApi qw/get_search/;
 
-sub timeout_wrap {
-	my ($f, $timeout) = @_;
+my $poller = undef;
+my %W;
 
-	$timeout = 20 unless defined $timeout;
-
-	my $ret = undef;
-	eval {
-		local $SIG{ALRM} = sub { die "alarm\n" };
-
-		eval {
-			alarm ($timeout);
-			$ret = &$f();
-			alarm (0);
-			return $ret; # for eval
-		} or do {
-			alarm (0);
-			my $err = $@;
-			return unless $err;
-			die $err;
-		};
-		alarm (0);
-		return 1; # for eval
-	} or do {
-		alarm (0);
-		my $err = $@;
-		return unless $err;
-
-		if ( $err =~ /^alarm/ ) {
-			die "alarm\n";
-		} else {
-			die $err;
-		}
-	};
-
-	return $ret;
-}
 
 sub better_name {
 	my ($d) = @_;
@@ -104,6 +71,27 @@ sub is_new_movie {
 	return (($now - $ctime) < $week);
 }
 
+sub csfd_get_search {
+	my ($d) = @_;
+
+	# closure for timeout wrapper
+	my $get_search = sub {
+		return get_search ($d);
+	};
+
+	my $ret = undef;
+	eval {
+		$ret = Wraps::timeout ($get_search, 10);
+		return 1; # for eval
+	} or do {
+		my $err = $@;
+		return unless $err;
+		$ret = undef;
+	};
+
+	return $ret;
+}
+
 sub cruise_dir {
 	my ($dh) = @_;
 
@@ -119,20 +107,9 @@ sub cruise_dir {
 		next if ( defined $movie{$d} );
 		$movie{$d} = 1;
 
-		# closure for timeout wrapper
-		my $get_search = sub {
-			return get_search ($d);
-		};
-		my $ret = undef;
-		eval {
-			$ret = timeout_wrap ($get_search, 10);
-			return 1; # for eval
-		} or do {
-			my $err = $@;
-			return unless $err;
-			undef $ret;
-		};
+		my $ret = csfd_get_search ($d);
 		next unless defined $ret;
+
 		my $movie = $ret->{films}[0];
 
 		render_movie ($movie, $d);
@@ -151,7 +128,7 @@ sub pool {
 		};
 
 		eval {
-			$dh = timeout_wrap ($opendir, 2);
+			$dh = Wraps::timeout ($opendir, 2);
 			print "<h1>$dir</h1>\n";
 			cruise_dir ($dh);
 			closedir ($dh);
@@ -171,18 +148,15 @@ sub pool {
 }
 
 
-my $poller = undef;
-my %W;
-sub impl {
+sub main_impl {
 	print "<!DOCTYPE HTML>\n<html>\n<head><meta charset=\"utf-8\" /></head>\n<body>\n";
 
 	#pool ();
 
-	 my $inotify = Linux::Inotify2->new () or die "Inotify initalization failed!";
+	my $inotify = Linux::Inotify2->new () or die "Inotify initalization failed!";
 
 	my @dirs = qw(/data/public/MKV/ /data/public/DVD/);
 
-	my $watched = 0;
 	foreach my $dir (@dirs) {
 		my $watcher = $inotify->watch ($dir, IN_CREATE, sub {
 				my ($e) = @_;
@@ -190,23 +164,10 @@ sub impl {
 
 				return unless ($e->IN_CREATE && -d $name);
 	
-				#csfd
 				my($filename, $directories, $suffix) = fileparse ($name);
 				my $bname = better_name ($filename);
 
-				# closure for timeout wrapper
-				my $get_search = sub {
-					return get_search ($bname);
-				};
-				my $ret = undef;
-				eval {
-					$ret = timeout_wrap ($get_search, 10);
-					return 1; # for eval
-				} or do {
-					my $err = $@;
-					return unless $err;
-					undef $ret;
-				};
+				my $ret = csfd_get_search ($bname);
 				return unless defined $ret;
 
 				my $movie = $ret->{films}[0];
@@ -215,16 +176,16 @@ sub impl {
 
 				my $ctime = (stat ($name))[10];
 				
-				my $what = is_new_movie ($ctime) ? ' - novinka!' : ' - nic zajimaveho';
+				my $what = is_new_movie ($ctime) ? ' - new!' : '';
 				print $movie_name . $what . "\n";
 
 			}
 		) or do { print "cant watch $dir: ($!)\n"; next; };
-		++$watched;
 		$W{$dir} = $watcher;
 	}
-	die "nothing to watch" unless $watched;
-	$poller = undef;
+
+	die "Nothing to watch!" unless %W;
+
 	$poller = AnyEvent->io (
 		fh   => $inotify->fileno,
 		poll => 'r',
@@ -235,18 +196,29 @@ sub impl {
 }
 
 $|++;
+
+sub cleanup_before_next_loop {
+	# clean up
+	undef $poller;
+	foreach my $dir (keys %W) {
+		$W{$dir}->cancel ();
+	}
+	undef %W;
+}
 sub main {
 
 	my $cv = AnyEvent->condvar ();
 	my $w = AnyEvent->timer (after => 0, interval => 60, cb => sub {
-			# clean up
-			$poller = undef;
-			foreach my $dir (keys %W) {
-				$W{$dir}->cancel ();
-			}
-			undef %W;
-			
-			impl();
+			cleanup_before_next_loop ();
+			eval {
+				return main_impl ();
+			} or do {
+				my $err = $@;
+				return unless $err;
+
+				chomp $err;
+				print STDERR $err;
+			};
 		});
 	
 	$cv->recv;
@@ -262,3 +234,42 @@ eval {
 	chomp $err;
 	print STDERR "$err\n";
 };
+
+package Wraps;
+
+sub timeout {
+	my ($f, $timeout) = @_;
+
+	$timeout = 20 unless defined $timeout;
+
+	my $ret = undef;
+	eval {
+		local $SIG{ALRM} = sub { die "alarm\n" };
+
+		eval {
+			alarm ($timeout);
+			$ret = &$f();
+			alarm (0);
+			return $ret; # for eval
+		} or do {
+			alarm (0);
+			my $err = $@;
+			return unless $err;
+			die $err;
+		};
+		alarm (0);
+		return 1; # for eval
+	} or do {
+		alarm (0);
+		my $err = $@;
+		return unless $err;
+
+		if ( $err =~ /^alarm/ ) {
+			die "alarm\n";
+		} else {
+			die $err;
+		}
+	};
+
+	return $ret;
+}
