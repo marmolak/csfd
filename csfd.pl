@@ -28,7 +28,7 @@ sub better_name {
 	$d =~ s/[^a-zA-Z](CZ|EN)//ig;
 	$d =~ s/sub(:?tCZ)?//g;
 	$d =~ s/5\.1//g;
-	$d =~ s/\-.*$//g;
+	$d =~ s/\-.*$//g; # -aXXo etc...
 
 	$d =~ s/(?:\.|\-)/ /g;
 	$d =~ s/\s+/ /g;

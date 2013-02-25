@@ -25,7 +25,6 @@ sub mac($) {
 
 sub get_search($) {
         my $q = uri_escape(shift);
-        #print "escaped: $q\n";
         my $page = get (mac ("https://android-api.csfd.cz/search?q=$q") );
         my $json = decode_json ($page);
 }
