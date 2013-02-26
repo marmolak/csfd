@@ -10,12 +10,12 @@ use Data::Dumper;
 use Linux::Inotify2;
 use AnyEvent;
 use File::Basename;
+use DBI;
 
 use CSFDAApi;
 
 my $poller = undef;
 my %W;
-
 
 sub better_name {
 	my ($d) = @_;
@@ -41,28 +41,6 @@ sub better_name {
 	$d = Encode::encode ("utf8", $d);
 
 	return $d;
-}
-
-sub render_movie {
-	my ($movie, $d) = @_;
-
-	return unless defined $movie;
-
-	my $movie_rating = "00";
-	$movie_rating = $movie->{rating_average} if defined $movie->{rating_average};
-	my $movie_name = Encode::encode ("utf8", $movie->{name}) if defined $movie->{name};
-
-	my $movie_genre = "";
-	if (defined $movie->{genre}) {
-		$movie_genre = join (' ', @{$movie->{genre}});
-
-		$movie_genre = Encode::encode ("utf8", $movie_genre);
-	}
-	my $movie_id = $movie->{id} if defined $movie->{id};
-
-	print "<p><strong>$movie_name - $movie_rating\% - ($d)</strong><br>\n";
-	print "$movie_genre<br>\n";
-	print "<a href=\"http://www.csfd.cz/film/$movie_id\">$movie_name</a></p>\n";
 }
 
 sub is_new_movie {
@@ -97,32 +75,76 @@ sub get_search {
 	return $ret;
 }
 
+sub prepare_add_query {
+	my ($db_conn) = @_;
+
+	my $query = "INSERT INTO movies (id, bname, dname, name, rating_average, genre, new) VALUES (?, ?, ?, ?, ?, ?, ?)";
+	my $prepared = $db_conn->prepare ($query);
+
+	return $prepared;
+}
+
+sub add_movie {
+	my ($prepared, $dir, $d, $movie, $is_new) = @_;
+
+	my $movie_rating = "00";
+	$movie_rating = $movie->{rating_average} if defined $movie->{rating_average};
+	my $movie_name = "";
+	$movie_name = Encode::encode ("utf8", $movie->{name}) if defined $movie->{name};
+
+	my $movie_genre = "";
+	if (defined $movie->{genre}) {
+		$movie_genre = join (' ', @{$movie->{genre}});
+		$movie_genre = Encode::encode ("utf8", $movie_genre);
+	}
+	my $movie_id = 00;
+	$movie_id = $movie->{id} if defined $movie->{id};
+
+	$prepared->execute ($movie_id, $d, $dir, $movie_name, $movie_rating, $movie_genre, $is_new) or die "i can't add movie";
+	$prepared->finish ();
+}
+
 sub cruise_dir {
-	my ($dh) = @_;
+	my ($db_conn, $dh) = @_;
 
 	my %movie = ();
 
-	while ( readdir ($dh) ) {
-		my $d = $_;
-		next if ( ($d eq '.') or ($d eq '..') );
+	chdir ($dh);
 
-		$d = better_name ($d);
-	
+	my @dirs = sort { $a cmp $b } grep { !/^\./ && -d $_ } readdir ($dh);
+
+	my $prepared = prepare_add_query ($db_conn);
+
+	foreach my $dir (@dirs) {
+
+		my $d = better_name ($dir);
+
 		# skip
 		next if ( defined $movie{$d} );
 		$movie{$d} = 1;
 
 		my $ret = get_search ($d);
 		next unless defined $ret;
-
 		my $movie = $ret->{films}[0];
+		next unless defined $movie;
 
-		render_movie ($movie, $d);
+		my $ctime = (stat ($dir))[10];
+		my $is_new = is_new_movie ($ctime);
+
+		add_movie ($prepared, $dir, $d, $movie, $is_new);
 	}
 }
 
+sub flush_movies_table ($) {
+	my ($db_conn) = @_;
+	my $query = "DELETE FROM movies";
+	my $prepared = $db_conn->prepare ($query);
+	$prepared->execute () or die "i can't delete table!";
+}
+
 sub pool {
-	my $dh = undef;
+	my ($db_conn) = @_;
+
 
 	my @dirs = qw(/data/public/MKV/ /data/public/DVD/);
 	foreach my $dir (@dirs) {
@@ -133,9 +155,8 @@ sub pool {
 		};
 
 		eval {
-			$dh = Wraps::timeout ($opendir, 2);
-			print "<h1>$dir</h1>\n";
-			cruise_dir ($dh);
+			my $dh = Wraps::timeout ($opendir, 2);
+			cruise_dir ($db_conn, $dh);
 			closedir ($dh);
 			return 1; # for eval
 		} or do {
@@ -154,38 +175,50 @@ sub pool {
 
 
 sub main_impl {
-	print "<!DOCTYPE HTML>\n<html>\n<head><meta charset=\"utf-8\" /></head>\n<body>\n";
+	my ($db_conn) = @_;
+	flush_movies_table ($db_conn);
 
-	#pool ();
+	pool ($db_conn);
 
 	my $inotify = Linux::Inotify2->new () or die "Inotify initalization failed!";
 
 	my @dirs = qw(/data/public/MKV/ /data/public/DVD/);
+	my $prepared = prepare_add_query ($db_conn);
+
+	my $query = "DELETE FROM movies WHERE dname = ?";
+	my $del_prepared = $db_conn->prepare ($query);
 
 	foreach my $dir (@dirs) {
-		my $watcher = $inotify->watch ($dir, IN_CREATE, sub {
+		my $watcher = $inotify->watch ($dir, IN_CREATE | IN_DELETE | IN_ONLYDIR, sub {
 				my ($e) = @_;
 				my $name = $e->fullname;
 
-				return unless ($e->IN_CREATE && -d $name);
-	
-				my($filename, $directories, $suffix) = fileparse ($name);
-				my $bname = better_name ($filename);
+				return unless (($e->IN_CREATE) || ($e->IN_DELETE));
 
-				my $ret = get_search ($bname);
-				return unless defined $ret;
+				my $filename = (fileparse ($name))[0];
 
-				my $movie = $ret->{films}[0];
-				return unless defined $movie;
-				my $movie_name = Encode::encode ("utf8", $movie->{name});
+				if ( $e->IN_CREATE ) {
 
-				my $ctime = (stat ($name))[10];
-				
-				my $what = is_new_movie ($ctime) ? ' - new!' : '';
-				print $movie_name . $what . "\n";
+					my $d = better_name ($filename);
 
+					my $ret = get_search ($d);
+					return unless defined $ret;
+
+					my $movie = $ret->{films}[0];
+					return unless defined $movie;
+
+					#render_movie ($movie, $d, 1);
+					add_movie ($prepared, $filename, $d, $movie, 1);
+					return;
+				}
+
+				if ( $e->IN_DELETE ) {
+					$del_prepared->execute ($filename) or die "can't delete!";
+					$del_prepared->finish ();
+					return;
+				}
 			}
-		) or do { print "cant watch $dir: ($!)\n"; next; };
+		) or do { print STDERR "cant watch $dir: ($!)\n"; next; };
 		$W{$dir} = $watcher;
 	}
 
@@ -197,10 +230,7 @@ sub main_impl {
 		cb   => sub { $inotify->poll () }
 	);
 
-	print "</body>\n</html>\n";
 }
-
-$|++;
 
 sub cleanup_before_next_loop {
 	# clean up
@@ -210,17 +240,25 @@ sub cleanup_before_next_loop {
 	}
 	undef %W;
 }
+
 sub main {
 
+	my $db_conn = DBI->connect(          
+		"dbi:SQLite:dbname=movies.db",
+		"",
+		"",
+		{ RaiseError => 1 },
+	) or die $DBI::errstr;
+
 	my $cv = AnyEvent->condvar ();
-	my $w = AnyEvent->timer (after => 0, interval => 60, cb => sub {
+	my $w = AnyEvent->timer (after => 0, interval => 3600, cb => sub {
 			cleanup_before_next_loop ();
+
 			eval {
-				return main_impl ();
+				return main_impl ($db_conn);
 			} or do {
 				my $err = $@;
 				return unless $err;
-
 				chomp $err;
 				print STDERR $err;
 			};
